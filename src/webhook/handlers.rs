@@ -421,11 +421,14 @@ impl WebhookHandler {
 
         let rtype = &new.record_type;
 
-        // Targets to remove: in old but not new
+        // Targets to remove: in old but not new, deduplicated to prevent
+        // redundant delete passes when old.targets contains duplicate entries.
+        let mut seen_remove = std::collections::HashSet::new();
         let targets_to_remove: Vec<&String> = old
             .targets
             .iter()
             .filter(|t| !new.targets.iter().any(|nt| targets_match(nt, t, rtype)))
+            .filter(|t| seen_remove.insert(normalize_target(t, rtype)))
             .collect();
 
         // Targets to add: in new but not old, deduplicated to prevent
