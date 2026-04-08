@@ -312,7 +312,16 @@ impl WebhookHandler {
         let ttl = endpoint_ttl(endpoint);
         let prio = endpoint_priority(endpoint)?;
 
-        for target in &endpoint.targets {
+        // Deduplicate targets to prevent duplicate API calls when endpoint.targets
+        // contains the same target more than once.
+        let mut seen = std::collections::HashSet::new();
+        let unique_targets: Vec<&String> = endpoint
+            .targets
+            .iter()
+            .filter(|t| seen.insert(normalize_target(t, &endpoint.record_type)))
+            .collect();
+
+        for target in unique_targets {
             // Check if record already exists (normalize hostname targets for comparison)
             let already_exists = existing.iter().any(|r| {
                 targets_match(&r.content, target, &endpoint.record_type)
@@ -433,13 +442,15 @@ impl WebhookHandler {
             .filter(|t| old.targets.iter().any(|ot| targets_match(ot, t, rtype)))
             .collect();
 
-        // Delete removed targets
+        // Delete removed targets — delete ALL matching records, not just the first,
+        // to handle duplicate records from prior manual edits or partial failures.
         let mut had_deletions = false;
         for target in &targets_to_remove {
-            if let Some(record) = existing
+            let matching: Vec<_> = existing
                 .iter()
-                .find(|r| targets_match(&r.content, target, rtype))
-            {
+                .filter(|r| targets_match(&r.content, target, rtype))
+                .collect();
+            for record in matching {
                 if self.config.dry_run {
                     info!(
                         "DRY RUN: Would delete record {} (target: {target})",
@@ -1292,5 +1303,177 @@ mod tests {
             .await
             .expect_err("mismatched update lengths should fail");
         assert!(matches!(err, Error::InvalidRequest(_)));
+    }
+
+    // --- Bug fix: duplicate record deletion during update ---
+
+    #[test]
+    fn filter_finds_all_duplicate_records_not_just_first() {
+        // Simulates the scenario where a zone has duplicate records for the
+        // same target (e.g., from prior manual edits or partial failures).
+        // The fix ensures all matching records are found via filter(), not
+        // just the first via find().
+        let records = vec![
+            porkbun::DnsRecord {
+                id: "rec-1".to_string(),
+                name: "app.example.com".to_string(),
+                record_type: "A".to_string(),
+                content: "1.2.3.4".to_string(),
+                ttl: Some("600".to_string()),
+                prio: None,
+            },
+            porkbun::DnsRecord {
+                id: "rec-2".to_string(),
+                name: "app.example.com".to_string(),
+                record_type: "A".to_string(),
+                content: "1.2.3.4".to_string(), // duplicate
+                ttl: Some("600".to_string()),
+                prio: None,
+            },
+            porkbun::DnsRecord {
+                id: "rec-3".to_string(),
+                name: "app.example.com".to_string(),
+                record_type: "A".to_string(),
+                content: "5.6.7.8".to_string(), // different target
+                ttl: Some("600".to_string()),
+                prio: None,
+            },
+        ];
+
+        let target_to_remove = "1.2.3.4";
+        let rtype = "A";
+
+        // Using filter (the fix): finds ALL matching records
+        let all_matching: Vec<_> = records
+            .iter()
+            .filter(|r| targets_match(&r.content, target_to_remove, rtype))
+            .collect();
+        assert_eq!(
+            all_matching.len(),
+            2,
+            "filter should find both duplicate records"
+        );
+        assert_eq!(all_matching[0].id, "rec-1");
+        assert_eq!(all_matching[1].id, "rec-2");
+
+        // Using find (the old bug): only finds the first
+        let first_only = records
+            .iter()
+            .find(|r| targets_match(&r.content, target_to_remove, rtype));
+        assert_eq!(
+            first_only.map(|r| r.id.as_str()),
+            Some("rec-1"),
+            "find only returns the first match, missing the duplicate"
+        );
+    }
+
+    #[test]
+    fn filter_finds_all_duplicate_cname_records_with_normalization() {
+        // Duplicate CNAME records with different casing/trailing dots
+        let records = vec![
+            porkbun::DnsRecord {
+                id: "rec-1".to_string(),
+                name: "alias.example.com".to_string(),
+                record_type: "CNAME".to_string(),
+                content: "target.example.com.".to_string(),
+                ttl: None,
+                prio: None,
+            },
+            porkbun::DnsRecord {
+                id: "rec-2".to_string(),
+                name: "alias.example.com".to_string(),
+                record_type: "CNAME".to_string(),
+                content: "Target.Example.COM".to_string(), // same after normalization
+                ttl: None,
+                prio: None,
+            },
+        ];
+
+        let target = "target.example.com";
+        let all: Vec<_> = records
+            .iter()
+            .filter(|r| targets_match(&r.content, target, "CNAME"))
+            .collect();
+        assert_eq!(
+            all.len(),
+            2,
+            "filter should find both CNAME duplicates after normalization"
+        );
+    }
+
+    // --- Bug fix: duplicate target deduplication during create ---
+
+    #[test]
+    fn create_deduplicates_identical_targets() {
+        // Simulates the deduplication logic used in create_endpoint.
+        // If endpoint.targets contains duplicates, only unique targets
+        // should be processed.
+        let targets = vec![
+            "1.2.3.4".to_string(),
+            "5.6.7.8".to_string(),
+            "1.2.3.4".to_string(), // duplicate
+            "5.6.7.8".to_string(), // duplicate
+            "9.10.11.12".to_string(),
+        ];
+        let record_type = "A";
+
+        let mut seen = std::collections::HashSet::new();
+        let unique: Vec<&String> = targets
+            .iter()
+            .filter(|t| seen.insert(normalize_target(t, record_type)))
+            .collect();
+
+        assert_eq!(unique.len(), 3, "should deduplicate to 3 unique targets");
+        assert_eq!(unique[0], "1.2.3.4");
+        assert_eq!(unique[1], "5.6.7.8");
+        assert_eq!(unique[2], "9.10.11.12");
+    }
+
+    #[test]
+    fn create_deduplicates_cname_targets_with_normalization() {
+        // CNAME targets with different casing/trailing dots should
+        // deduplicate correctly via normalize_target.
+        let targets = vec![
+            "alias.example.com".to_string(),
+            "Alias.Example.COM.".to_string(), // same after normalization
+            "other.example.com".to_string(),
+        ];
+        let record_type = "CNAME";
+
+        let mut seen = std::collections::HashSet::new();
+        let unique: Vec<&String> = targets
+            .iter()
+            .filter(|t| seen.insert(normalize_target(t, record_type)))
+            .collect();
+
+        assert_eq!(
+            unique.len(),
+            2,
+            "CNAME targets differing only in case/trailing dot should deduplicate"
+        );
+        assert_eq!(unique[0], "alias.example.com");
+        assert_eq!(unique[1], "other.example.com");
+    }
+
+    #[test]
+    fn create_preserves_all_targets_when_no_duplicates() {
+        let targets = vec![
+            "1.2.3.4".to_string(),
+            "5.6.7.8".to_string(),
+            "9.10.11.12".to_string(),
+        ];
+        let record_type = "A";
+
+        let mut seen = std::collections::HashSet::new();
+        let unique: Vec<&String> = targets
+            .iter()
+            .filter(|t| seen.insert(normalize_target(t, record_type)))
+            .collect();
+
+        assert_eq!(
+            unique.len(),
+            3,
+            "all targets should be preserved when there are no duplicates"
+        );
     }
 }
