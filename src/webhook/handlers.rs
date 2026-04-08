@@ -438,11 +438,14 @@ impl WebhookHandler {
             .filter(|t| seen_add.insert(normalize_target(t, rtype)))
             .collect();
 
-        // Shared targets: check if TTL/priority changed -> edit
+        // Shared targets: check if TTL/priority changed -> edit, deduplicated
+        // to prevent redundant edit API calls when new.targets has duplicates.
+        let mut seen_shared = std::collections::HashSet::new();
         let shared_targets: Vec<&String> = new
             .targets
             .iter()
             .filter(|t| old.targets.iter().any(|ot| targets_match(ot, t, rtype)))
+            .filter(|t| seen_shared.insert(normalize_target(t, rtype)))
             .collect();
 
         // Delete removed targets — delete ALL matching records, not just the first,
@@ -1307,5 +1310,4 @@ mod tests {
             .expect_err("mismatched update lengths should fail");
         assert!(matches!(err, Error::InvalidRequest(_)));
     }
-
 }
