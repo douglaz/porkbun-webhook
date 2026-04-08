@@ -477,12 +477,16 @@ impl WebhookHandler {
             existing
         };
 
-        // Edit shared targets if TTL/priority changed
+        // Edit shared targets if TTL/priority changed — edit ALL matching records,
+        // not just the first, to handle duplicate records from prior manual edits
+        // or partial failures. Stale duplicates with old TTL/priority would cause
+        // group_porkbun_records to surface extra endpoints on the next read.
         for target in &shared_targets {
-            if let Some(record) = existing
+            let matching: Vec<_> = existing
                 .iter()
-                .find(|r| targets_match(&r.content, target, rtype))
-            {
+                .filter(|r| targets_match(&r.content, target, rtype))
+                .collect();
+            for record in matching {
                 let needs_edit = !ttl_effectively_equal(record.ttl_u32(), new_ttl)
                     || !prio_effectively_equal(record.prio_u32(), new_prio);
 

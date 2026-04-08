@@ -715,3 +715,85 @@ async fn apply_changes_update_create_deduplicates_new_targets() {
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     // wiremock will panic on drop if create was called != 1 time
 }
+
+// --- Bug fix: update edits all duplicate shared-target records ---
+
+#[tokio::test]
+async fn apply_changes_update_edits_all_duplicate_shared_records() {
+    // If the zone has duplicate records for a retained target and the update
+    // changes TTL, ALL duplicate records should be edited — not just the first.
+    // Otherwise the stale duplicate surfaces as an extra endpoint on next read
+    // because group_porkbun_records groups by TTL/priority.
+    let server = MockServer::start().await;
+
+    // Mock list_records returning two duplicate records for the shared target
+    // with old TTL of 600
+    Mock::given(method("POST"))
+        .and(path("/dns/retrieve/example.com"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": "SUCCESS",
+            "records": [
+                {
+                    "id": "100",
+                    "name": "app.example.com",
+                    "type": "A",
+                    "content": "1.2.3.4",
+                    "ttl": "600",
+                    "prio": null
+                },
+                {
+                    "id": "101",
+                    "name": "app.example.com",
+                    "type": "A",
+                    "content": "1.2.3.4",
+                    "ttl": "600",
+                    "prio": null
+                }
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    // Both duplicate records should be edited (TTL change from 600 to 300)
+    Mock::given(method("POST"))
+        .and(path("/dns/edit/example.com/100"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": "SUCCESS"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/dns/edit/example.com/101"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": "SUCCESS"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let app = build_app(&server.uri());
+    let req = json_request(
+        "POST",
+        "/records",
+        Some(json!({
+            "updateOld": [{
+                "dnsName": "app.example.com",
+                "targets": ["1.2.3.4"],
+                "recordType": "A",
+                "recordTTL": 600
+            }],
+            "updateNew": [{
+                "dnsName": "app.example.com",
+                "targets": ["1.2.3.4"],
+                "recordType": "A",
+                "recordTTL": 300
+            }]
+        })),
+    );
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    // wiremock will panic on drop if edit mocks were not called exactly once each
+}
