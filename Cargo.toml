@@ -1,0 +1,49 @@
+[package]
+name = "porkbun-webhook"
+version = "0.1.0"
+edition = "2021"
+authors = ["Porkbun Webhook Contributors"]
+description = "Porkbun DNS webhook provider for external-dns"
+license = "MIT"
+repository = "https://github.com/douglaz/porkbun-webhook"
+
+[dependencies]
+# Web framework
+axum = "0.7"
+tower-http = { version = "0.5", features = ["trace", "cors"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client for Porkbun API
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Configuration
+dotenvy = "0.15"
+
+[dev-dependencies]
+wiremock = "0.6"
+pretty_assertions = "1.4"
+tower = { version = "0.5", features = ["util"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = "z"
+panic = "abort"
+
+[profile.dev]
+debug = true
