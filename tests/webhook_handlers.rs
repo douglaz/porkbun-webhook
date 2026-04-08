@@ -505,3 +505,213 @@ async fn apply_changes_null_arrays_returns_204() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 }
+
+// --- Bug fix: duplicate target deduplication during create ---
+
+#[tokio::test]
+async fn apply_changes_create_deduplicates_targets() {
+    // If endpoint.targets contains the same target twice, create_endpoint
+    // should only call the Porkbun create API once (not twice).
+    let server = MockServer::start().await;
+
+    // Mock list_records returning empty (no existing records)
+    Mock::given(method("POST"))
+        .and(path("/dns/retrieve/example.com"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": "SUCCESS",
+            "records": []
+        })))
+        .mount(&server)
+        .await;
+
+    // Create should be called exactly once despite duplicate target
+    Mock::given(method("POST"))
+        .and(path("/dns/create/example.com"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": "SUCCESS",
+            "id": 999
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let app = build_app(&server.uri());
+    let req = json_request(
+        "POST",
+        "/records",
+        Some(json!({
+            "create": [{
+                "dnsName": "app.example.com",
+                "targets": ["10.0.0.1", "10.0.0.1"],
+                "recordType": "A",
+                "recordTTL": 600
+            }]
+        })),
+    );
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    // wiremock will panic on drop if create was called != 1 time
+}
+
+// --- Bug fix: update deletes all duplicate records ---
+
+#[tokio::test]
+async fn apply_changes_update_deletes_all_duplicate_records() {
+    // If the zone has duplicate records for the same target (from prior
+    // manual edits or partial failures), update_endpoint should delete
+    // ALL matching records, not just the first.
+    let server = MockServer::start().await;
+
+    // Mock list_records returning two duplicate records for the old target
+    Mock::given(method("POST"))
+        .and(path("/dns/retrieve/example.com"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": "SUCCESS",
+            "records": [
+                {
+                    "id": "100",
+                    "name": "app.example.com",
+                    "type": "A",
+                    "content": "1.2.3.4",
+                    "ttl": "600",
+                    "prio": null
+                },
+                {
+                    "id": "101",
+                    "name": "app.example.com",
+                    "type": "A",
+                    "content": "1.2.3.4",
+                    "ttl": "600",
+                    "prio": null
+                }
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    // Both duplicate records should be deleted
+    Mock::given(method("POST"))
+        .and(path("/dns/delete/example.com/100"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": "SUCCESS"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/dns/delete/example.com/101"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": "SUCCESS"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // New target should be created
+    Mock::given(method("POST"))
+        .and(path("/dns/create/example.com"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": "SUCCESS",
+            "id": 200
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let app = build_app(&server.uri());
+    let req = json_request(
+        "POST",
+        "/records",
+        Some(json!({
+            "updateOld": [{
+                "dnsName": "app.example.com",
+                "targets": ["1.2.3.4"],
+                "recordType": "A",
+                "recordTTL": 600
+            }],
+            "updateNew": [{
+                "dnsName": "app.example.com",
+                "targets": ["5.6.7.8"],
+                "recordType": "A",
+                "recordTTL": 600
+            }]
+        })),
+    );
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    // wiremock will panic on drop if delete mocks were not called exactly once each
+}
+
+// --- Bug fix: update create path deduplicates targets ---
+
+#[tokio::test]
+async fn apply_changes_update_create_deduplicates_new_targets() {
+    // If updateNew.targets contains the same target twice and that target
+    // is new (not in updateOld), the update path should only create it once.
+    let server = MockServer::start().await;
+
+    // Mock list_records returning the old target
+    Mock::given(method("POST"))
+        .and(path("/dns/retrieve/example.com"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": "SUCCESS",
+            "records": [{
+                "id": "100",
+                "name": "app.example.com",
+                "type": "A",
+                "content": "1.2.3.4",
+                "ttl": "600",
+                "prio": null
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    // Old target removed
+    Mock::given(method("POST"))
+        .and(path("/dns/delete/example.com/100"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": "SUCCESS"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // New target should be created exactly once despite appearing twice
+    Mock::given(method("POST"))
+        .and(path("/dns/create/example.com"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": "SUCCESS",
+            "id": 200
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let app = build_app(&server.uri());
+    let req = json_request(
+        "POST",
+        "/records",
+        Some(json!({
+            "updateOld": [{
+                "dnsName": "app.example.com",
+                "targets": ["1.2.3.4"],
+                "recordType": "A",
+                "recordTTL": 600
+            }],
+            "updateNew": [{
+                "dnsName": "app.example.com",
+                "targets": ["5.6.7.8", "5.6.7.8"],
+                "recordType": "A",
+                "recordTTL": 600
+            }]
+        })),
+    );
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    // wiremock will panic on drop if create was called != 1 time
+}
