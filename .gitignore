@@ -1,0 +1,36 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Nix
+/result
+/result-*
+
+# Environment
+.env
+.env.local
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+*.log
+coverage/
+
+# Internal tooling
+.ralph-burning/
+.bv/
+
+# Spec / working docs (not shipped)
+porkbun-port-spec-updated.md
