@@ -5,13 +5,13 @@ mod porkbun;
 mod webhook;
 
 use anyhow::Result;
-use axum::{middleware as axum_middleware, serve, Router};
+use axum::{Router, middleware as axum_middleware, serve};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
 use tracing::info;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 use crate::config::Config;
 use crate::webhook::routes;

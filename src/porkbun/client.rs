@@ -1,8 +1,8 @@
 use super::types::*;
 use crate::error::{Error, Result};
 use reqwest::Client as HttpClient;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
@@ -66,15 +66,15 @@ impl Client {
             let text = response.text().await.unwrap_or_default();
             // Porkbun may return 403 for domain-level API access issues
             // (e.g. API access not enabled for a domain), not just bad credentials.
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
-                if let Some(msg) = parsed.get("message").and_then(|m| m.as_str()) {
-                    let lower = msg.to_lowercase();
-                    if lower.contains("domain")
-                        || lower.contains("api access")
-                        || lower.contains("not enabled")
-                    {
-                        return Err(Error::DomainNotAllowed(format!("HTTP {status}: {msg}")));
-                    }
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text)
+                && let Some(msg) = parsed.get("message").and_then(|m| m.as_str())
+            {
+                let lower = msg.to_lowercase();
+                if lower.contains("domain")
+                    || lower.contains("api access")
+                    || lower.contains("not enabled")
+                {
+                    return Err(Error::DomainNotAllowed(format!("HTTP {status}: {msg}")));
                 }
             }
             return Err(Error::Authentication(format!("HTTP {status}: {text}")));
@@ -85,33 +85,33 @@ impl Client {
 
             // 5xx from Porkbun indicates an upstream outage — transient
             if status.is_server_error() {
-                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
-                    if let Some(msg) = parsed.get("message").and_then(|m| m.as_str()) {
-                        return Err(Error::PorkbunUpstream(format!("HTTP {status}: {msg}")));
-                    }
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text)
+                    && let Some(msg) = parsed.get("message").and_then(|m| m.as_str())
+                {
+                    return Err(Error::PorkbunUpstream(format!("HTTP {status}: {msg}")));
                 }
                 return Err(Error::PorkbunUpstream(format!("HTTP {status}: {text}")));
             }
 
             // 4xx (non-429/401/403) — inspect for auth or not-found errors
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
-                if let Some(msg) = parsed.get("message").and_then(|m| m.as_str()) {
-                    let lower = msg.to_lowercase();
-                    // Porkbun sends 400 for bad API keys with messages like
-                    // "Invalid API key" or "Invalid secret API key"
-                    if lower.contains("invalid api key")
-                        || lower.contains("invalid secret")
-                        || lower.contains("authentication")
-                        || lower.contains("apikey")
-                    {
-                        return Err(Error::Authentication(format!("HTTP {status}: {msg}")));
-                    }
-                    // Record-not-found errors (e.g. deleting already-deleted record)
-                    if lower.contains("not found") || lower.contains("does not exist") {
-                        return Err(Error::RecordNotFound(format!("HTTP {status}: {msg}")));
-                    }
-                    return Err(Error::PorkbunApi(format!("HTTP {status}: {msg}")));
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text)
+                && let Some(msg) = parsed.get("message").and_then(|m| m.as_str())
+            {
+                let lower = msg.to_lowercase();
+                // Porkbun sends 400 for bad API keys with messages like
+                // "Invalid API key" or "Invalid secret API key"
+                if lower.contains("invalid api key")
+                    || lower.contains("invalid secret")
+                    || lower.contains("authentication")
+                    || lower.contains("apikey")
+                {
+                    return Err(Error::Authentication(format!("HTTP {status}: {msg}")));
                 }
+                // Record-not-found errors (e.g. deleting already-deleted record)
+                if lower.contains("not found") || lower.contains("does not exist") {
+                    return Err(Error::RecordNotFound(format!("HTTP {status}: {msg}")));
+                }
+                return Err(Error::PorkbunApi(format!("HTTP {status}: {msg}")));
             }
             return Err(Error::PorkbunApi(format!("HTTP {status}: {text}")));
         }

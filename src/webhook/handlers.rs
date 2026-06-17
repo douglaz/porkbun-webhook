@@ -2,7 +2,13 @@ use super::types::*;
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::porkbun::{self, Client as PorkbunClient};
-use axum::{extract::rejection::JsonRejection, extract::Query, http::StatusCode, Json};
+use axum::{
+    Json,
+    extract::Query,
+    extract::rejection::JsonRejection,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -50,7 +56,7 @@ impl WebhookHandler {
         }))
     }
 
-    pub async fn negotiate(&self) -> Result<impl axum::response::IntoResponse> {
+    pub async fn negotiate(&self) -> Result<Response> {
         let filters = self.config.normalized_domain_filter();
 
         Ok((
@@ -62,7 +68,8 @@ impl WebhookHandler {
             Json(serde_json::json!({
                 "filters": filters
             })),
-        ))
+        )
+            .into_response())
     }
 
     pub async fn get_records(&self, query: Query<GetRecordsQuery>) -> Result<Json<Vec<Endpoint>>> {
@@ -586,10 +593,10 @@ impl WebhookHandler {
         // Check cache
         {
             let cache = self.domain_cache.lock().await;
-            if let Some(ref c) = *cache {
-                if Instant::now() < c.expires_at {
-                    return Ok(c.domains.clone());
-                }
+            if let Some(ref c) = *cache
+                && Instant::now() < c.expires_at
+            {
+                return Ok(c.domains.clone());
             }
         }
 

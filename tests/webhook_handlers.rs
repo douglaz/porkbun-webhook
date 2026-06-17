@@ -1,5 +1,5 @@
-use axum::http::StatusCode;
 use axum::Router;
+use axum::http::StatusCode;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::time::Duration;
