@@ -2,8 +2,8 @@ use super::handlers::WebhookHandler;
 use crate::config::Config;
 use crate::porkbun::Client as PorkbunClient;
 use axum::{
-    routing::{get, post},
     Router,
+    routing::{get, post},
 };
 use std::sync::Arc;
 
